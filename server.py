@@ -40,8 +40,14 @@ ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 IS_PRODUCTION = ENVIRONMENT == "production"
 
 def _cors_origins() -> list:
-    raw = os.environ.get("CORS_ORIGINS", FRONTEND_URL)
-    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    raw = os.environ.get("CORS_ORIGINS", "").strip().strip('"').strip("'")
+    if not raw or raw == "*":
+        return ["*"]
+    origins = [o.strip().strip('"').strip("'") for o in raw.split(",") if o.strip()]
+    for extra in (FRONTEND_URL, "http://localhost:3000", "http://127.0.0.1:3000"):
+        extra = extra.strip().strip('"').strip("'")
+        if extra and extra not in origins:
+            origins.append(extra)
     return origins or ["*"]
 
 def _dev_payload(**kwargs) -> dict:
@@ -261,7 +267,10 @@ async def login(data: LoginIn):
 @api.post("/admin/login")
 async def admin_login(data: AdminLoginIn):
     q: dict = {"role": "admin"}
-    if data.email:
+    if data.email and data.username:
+        q["email"] = data.email.lower()
+        q["username"] = data.username
+    elif data.email:
         q["email"] = data.email.lower()
     elif data.username:
         q["username"] = data.username
@@ -841,17 +850,24 @@ async def seed():
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_password = os.environ["ADMIN_PASSWORD"]
     existing = await db.users.find_one({"email": admin_email})
+    admin_username = os.environ.get("ADMIN_USERNAME", "admin")
     if not existing:
         await db.users.insert_one({
-            "id": new_id(), "email": admin_email, "username": os.environ.get("ADMIN_USERNAME", "admin"),
+            "id": new_id(), "email": admin_email, "username": admin_username,
             "name": "Admin", "phone": "9999999999", "address": "SLV Bakery HQ",
             "city": "Bangalore", "state": "KA", "pincode": "560095",
             "password_hash": hash_password(admin_password), "role": "admin",
             "verified": True, "created_at": now_iso(),
         })
-    elif not IS_PRODUCTION:
-        await db.users.update_one({"email": admin_email},
-            {"$set": {"password_hash": hash_password(admin_password), "verified": True, "username": "admin"}})
+    else:
+        # Keep admin in sync with Render env vars (password/email/username changes)
+        await db.users.update_one({"email": admin_email}, {
+            "$set": {
+                "password_hash": hash_password(admin_password),
+                "username": admin_username,
+                "verified": True,
+            }
+        })
 
     # test customer (development only)
     if not IS_PRODUCTION and not await db.users.find_one({"email": "customer@slvbakery.com"}):
