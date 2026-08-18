@@ -743,48 +743,713 @@ async def admin_reports(period: str = "daily", _: dict = Depends(get_admin_user)
     }
 
 def _invoice_html(order: dict) -> str:
-    rows = "".join(
-        f"<tr><td>{it.get('name','')}</td><td>{it.get('quantity',1)}</td><td>₹{it.get('price',0)}</td>"
-        f"<td>₹{it.get('price',0)*it.get('quantity',1):.0f}</td></tr>"
-        for it in order.get("items", [])
-    )
-    def fmt(value):
-        if not value: return "—"
+    rows = ""
+
+    for index, it in enumerate(order.get("items", []) or [], start=1):
+
+        item_name = it.get("name", "")
+        quantity = it.get("quantity", 1)
+        price = it.get("price", 0)
+
+        # Safely convert quantity and price
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%d %b %Y, %I:%M %p")
+            quantity_num = float(quantity)
+        except (ValueError, TypeError):
+            quantity_num = 0
+
+        try:
+            price_num = float(price)
+        except (ValueError, TypeError):
+            price_num = 0
+
+        item_total = price_num * quantity_num
+
+        # Display quantity without .0
+        if quantity_num.is_integer():
+            quantity_display = str(int(quantity_num))
+        else:
+            quantity_display = str(quantity_num)
+
+        rows += f"""
+        <tr>
+            <td class="center">{index}</td>
+            <td class="item-name">{item_name}</td>
+            <td class="center">{quantity_display}</td>
+            <td class="right">₹{price_num:.2f}</td>
+            <td class="right">₹{item_total:.2f}</td>
+        </tr>
+        """
+    def fmt(value):
+
+        if not value:
+            return "—"
+
+        try:
+            return datetime.fromisoformat(
+                value.replace("Z", "+00:00")
+            ).strftime(
+                "%d %b %Y, %I:%M %p"
+            )
+
         except Exception:
             return str(value)
 
+    def money(value):
+
+        try:
+            return f"{float(value or 0):.2f}"
+
+        except (ValueError, TypeError):
+            return "0.00"
     cancellation_note = ""
+
     reason = order.get("cancellation_reason")
+
     if reason:
-        cancellation_note = f"<p><b>Cancellation Reason:</b> {reason}</p>"
 
-    return f"""<!DOCTYPE html><html><head><title>Invoice {order.get('order_no','')}</title>
-<style>body{{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:auto;color:#2D1E16}}
-h1{{color:#D97706}}table{{width:100%;border-collapse:collapse;margin:16px 0}}
-th,td{{padding:8px;border-bottom:1px solid #E6DFD5;text-align:left}}th{{background:#FBF5EA}}
-.total{{font-size:18px;font-weight:bold;margin-top:12px}}</style></head>
-<body><h1>SLV Bakery</h1><p>Koramangala, Bangalore</p>
-<p><b>Invoice:</b> {order.get('order_no','')}<br/><b>Order Date:</b> {fmt(order.get('created_at'))}<br/>
-<b>Delivered Date:</b> {fmt(order.get('delivered_at'))}<br/>
-<b>Customer:</b> {order.get('user_name','')} ({order.get('user_email','')})<br/>
-<b>Phone:</b> {order.get('phone','')}<br/><b>Address:</b> {order.get('address','')}</p>
+        cancellation_note = f"""
+        <div class="cancellation">
+            <b>Cancellation Reason:</b> {reason}
+        </div>
+        """
+    payment_method = order.get(
+        "payment_method",
+        "COD"
+    ) or "COD"
+
+    payment_status = order.get(
+        "payment_status"
+    )
+    if not payment_status:
+        if str(
+            order.get("status", "")
+        ).lower() == "delivered":
+            payment_status = "Paid"
+        else:
+            payment_status = "Pending"
+    delivered_date = (
+        fmt(order.get("delivered_at"))
+        if order.get("delivered_at")
+        else "Not Delivered"
+    )
+    return f"""
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="UTF-8">
+
+<title>
+    Tax Invoice {order.get('order_no','')}
+</title>
+<style>
+* {{
+    box-sizing: border-box;
+}}
+
+body {{
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 0;
+    padding: 30px;
+    background: #ffffff;
+    color: #2D1E16;
+    font-size: 13px;
+}}
+
+.invoice-container {{
+    max-width: 850px;
+    margin: auto;
+    background: #ffffff;
+    border: 1px solid #dddddd;
+    padding: 30px;
+}}
+
+.header {{
+    position: relative;
+    min-height: 175px;
+    border-bottom: 2px solid #06d2d9;
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+}}
+
+.company-details {{
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 40%;
+    line-height: 1.6;
+}}
+
+.company-details h2 {{
+    margin: 0 0 8px 0;
+    color: #06aeb4;
+    font-size: 22px;
+}}
+
+.company-details p {{
+    margin: 3px 0;
+    font-size: 11px;
+}}
+
+.logo-section {{
+    position: absolute;
+    left: 50%;
+    top: 0;
+    transform: translateX(-50%);
+    width: 180px;
+    text-align: center;
+}}
+
+.logo-section img {{
+    width: 70px;
+    height: 70px;
+    object-fit: contain;
+}}
+
+.logo-section h3 {{
+    margin: 5px 0 0 0;
+    color: #06aeb4;
+    font-size: 20px;
+}}
+
+.logo-section p {{
+    margin: 3px 0;
+    color: #777777;
+    font-size: 9px;
+}}
+
+.invoice-details {{
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 40%;
+    text-align: right;
+}}
+
+.invoice-details h1 {{
+    margin: 0 0 10px 0;
+    color: #06aeb4;
+    font-size: 27px;
+    letter-spacing: 1px;
+}}
+
+.invoice-details p {{
+    margin: 5px 0;
+    font-size: 11px;
+}}
+
+.section {{
+    margin-top: 20px;
+}}
+
+.section-title {{
+    background: #06d2d9;
+    color: #ffffff;
+    padding: 9px 12px;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 0.3px;
+    border-radius: 5px 5px 0 0;
+}}
+
+.info-table {{
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0;
+}}
+
+.info-table td {{
+    padding: 9px 10px;
+    border: 1px solid #E6DFD5;
+    vertical-align: top;
+}}
+
+.info-label {{
+    width: 18%;
+    font-weight: bold;
+    color: #555555;
+}}
+
+.info-value {{
+    width: 32%;
+}}
+
+.items-table {{
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    margin: 0;
+}}
+
+.items-table th {{
+    background: #f2fafa;
+    color: #333333;
+    padding: 10px 7px;
+    border: 1px solid #d8d8d8;
+    font-size: 11px;
+    font-weight: bold;
+    vertical-align: middle;
+}}
+
+.items-table td {{
+    padding: 10px 7px;
+    border: 1px solid #dddddd;
+    font-size: 11px;
+    vertical-align: middle;
+}}
+
+.items-table th:nth-child(1),
+.items-table td:nth-child(1) {{
+    width: 8%;
+    text-align: center;
+}}
+
+.items-table th:nth-child(2),
+.items-table td:nth-child(2) {{
+    width: 42%;
+    text-align: left;
+}}
+
+.items-table th:nth-child(3),
+.items-table td:nth-child(3) {{
+    width: 12%;
+    text-align: center;
+}}
+
+.items-table th:nth-child(4),
+.items-table td:nth-child(4) {{
+    width: 18%;
+    text-align: right;
+}}
+
+.items-table th:nth-child(5),
+.items-table td:nth-child(5) {{
+    width: 20%;
+    text-align: right;
+}}
+.center {{
+    text-align: center !important;
+}}
+
+.right {{
+    text-align: right !important;
+}}
+
+.item-name {{
+    text-align: left !important;
+    font-weight: 500;
+    word-wrap: break-word;
+}}
+
+.cancellation {{
+    margin-top: 15px;
+    padding: 12px;
+    background: #fff3f3;
+    border: 1px solid #efb2b2;
+    color: #a33a3a;
+    border-radius: 5px;
+}}
+.summary-wrapper {{
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 20px;
+}}
+
+.summary-table {{
+    width: 360px;
+    border-collapse: collapse;
+}}
+
+.summary-table td {{
+    padding: 7px 10px;
+    border-bottom: 1px solid #E6DFD5;
+}}
+
+.summary-label {{
+    text-align: left;
+}}
+
+.summary-value {{
+    text-align: right;
+}}
+
+.total-row td {{
+    background: #06d2d9;
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 10px;
+}}
+.payment-box {{
+    margin-top: 20px;
+    padding: 12px 15px;
+    background: #f8ffff;
+    border: 1px solid #bdeff0;
+    border-radius: 5px;
+    line-height: 1.7;
+}}
+
+.payment-box strong {{
+    color: #06aeb4;
+}}
+.footer {{
+    margin-top: 45px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+}}
+
+.footer-note {{
+    color: #777777;
+    font-size: 11px;
+    line-height: 1.7;
+}}
+
+.signature {{
+    width: 220px;
+    text-align: center;
+}}
+
+.signature img {{
+    width: 130px;
+    height: 55px;
+    object-fit: contain;
+    margin-bottom: 3px;
+}}
+
+.signature-line {{
+    border-top: 1px solid #333333;
+    padding-top: 6px;
+    font-weight: bold;
+}}
+
+.signature-company {{
+    font-size: 11px;
+    margin-top: 4px;
+}}
+.thank-you {{
+    text-align: center;
+    margin-top: 25px;
+    color: #06aeb4;
+    font-size: 14px;
+    font-weight: bold;
+}}
+@media print {{
+    body {{
+        padding: 0;
+        background: #ffffff;
+    }}
+    .invoice-container {{
+        max-width: 100%;
+        border: none;
+        padding: 15px;
+    }}
+    @page {{
+        size: A4;
+        margin: 10mm;
+    }}
+}}
+</style>
+</head>
+<body>
+<div class="invoice-container">
+<div class="header">
+    <div class="company-details">
+        <h2>
+            SLV Bakery
+        </h2>
+        <p>
+            <b>FSSAI:</b>
+            2026087689964578
+        </p>
+        <p>
+            <b>GSTIN:</b>
+            29AARAK9898R
+        </p>
+        <p>
+            <b>Email:</b>
+            slviyengarbakery.com
+        </p>
+        <p>
+            <b>Address:</b>
+            1st Block, Koramangala,
+            Bangalore - 560095
+        </p>
+    </div>
+    <div class="logo-section">
+        <img
+            src="/bakery-icon-logo.png"
+            alt="SLV Bakery Logo"
+        />
+        <h3>
+            SLV Bakery
+        </h3>
+        <p>
+            Freshly Baked • Made With Love
+        </p>
+    </div>
+    <div class="invoice-details">
+        <h1>
+            TAX INVOICE
+        </h1>
+        <p>
+            <b>Invoice No:</b>
+            {order.get('order_no','')}
+        </p>
+        <p>
+            <b>Order Date:</b>
+            {fmt(order.get('created_at'))}
+        </p>
+        <p>
+            <b>Status:</b>
+            {order.get('status','')}
+        </p>
+    </div>
+</div>
+<div class="section">
+    <div class="section-title">
+        CUSTOMER INFORMATION
+    </div>
+    <table class="info-table">
+        <tr>
+            <td class="info-label">
+                Customer Name
+            </td>
+            <td class="info-value">
+                {order.get('user_name','')}
+            </td>
+            <td class="info-label">
+                Phone
+            </td>
+            <td class="info-value">
+                {order.get('phone','')}
+            </td>
+        </tr>
+        <tr>
+            <td class="info-label">
+                Email
+            </td>
+            <td class="info-value">
+                {order.get('user_email','')}
+            </td>
+            <td class="info-label">
+                Customer Type
+            </td>
+            <td class="info-value">
+                Online Customer
+            </td>
+        </tr>
+        <tr>
+            <td class="info-label">
+                Delivery Address
+            </td>
+            <td colspan="3">
+                {order.get('address','')}
+            </td>
+        </tr>
+    </table>
+</div>
+<div class="section">
+    <div class="section-title">
+        ORDER INFORMATION
+    </div>
+    <table class="info-table">
+        <tr>
+            <td class="info-label">
+                Order Number
+            </td>
+            <td class="info-value">
+                {order.get('order_no','')}
+            </td>
+            <td class="info-label">
+                Payment Method
+            </td>
+            <td class="info-value">
+                {payment_method}
+            </td>
+        </tr>
+        <tr>
+            <td class="info-label">
+                Order Date
+            </td>
+            <td class="info-value">
+                {fmt(order.get('created_at'))}
+            </td>
+            <td class="info-label">
+                Delivered Date
+            </td>
+            <td class="info-value">
+                {delivered_date}
+            </td>
+        </tr>
+        <tr>
+            <td class="info-label">
+                Order Status
+            </td>
+            <td colspan="3">
+                <b>
+                    {order.get('status','')}
+                </b>
+            </td>
+        </tr>
+    </table>
+</div>
 {cancellation_note}
-<table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>{rows}</tbody></table>
-<p>Subtotal: ₹{order.get('subtotal',0)}<br/>Platform Fee: ₹{order.get('platform_fee',0)}<br/>
-Delivery: ₹{order.get('delivery_charge',0)}<br/>Packaging: ₹{order.get('packaging',0)}<br/>
-Discount: -₹{order.get('discount',0)}</p>
-<p class="total">Grand Total: ₹{order.get('total',0)}</p>
-<p>Payment: {order.get('payment_method','COD')} | Status: {order.get('status','')}</p></body></html>"""
-
+<div class="section">
+    <div class="section-title">
+        ORDER ITEMS
+    </div>
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th>
+                    S.No
+                </th>
+                <th>
+                    Item Description
+                </th>
+                <th>
+                    Qty
+                </th>
+                <th>
+                    Unit Price
+                </th>
+                <th>
+                    Amount
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            {rows}
+        </tbody>
+    </table>
+</div>
+<div class="summary-wrapper">
+    <table class="summary-table">
+        <tr>
+            <td class="summary-label">
+                Subtotal
+            </td>
+            <td class="summary-value">
+                ₹{money(order.get('subtotal',0))}
+            </td>
+        </tr>
+        <tr>
+            <td class="summary-label">
+                Platform Fee
+            </td>
+            <td class="summary-value">
+                ₹{money(order.get('platform_fee',0))}
+            </td>
+        </tr>
+        <tr>
+            <td class="summary-label">
+                Delivery Charge
+            </td>
+            <td class="summary-value">
+                ₹{money(order.get('delivery_charge',0))}
+            </td>
+        </tr>
+        <tr>
+            <td class="summary-label">
+                Packaging
+            </td>
+            <td class="summary-value">
+                ₹{money(order.get('packaging',0))}
+            </td>
+        </tr>
+        <tr>
+            <td class="summary-label">
+                Discount
+            </td>
+            <td class="summary-value">
+                -₹{money(order.get('discount',0))}
+            </td>
+        </tr>
+        <tr class="total-row">
+            <td>
+                GRAND TOTAL
+            </td>
+            <td class="summary-value">
+                ₹{money(order.get('total',0))}
+            </td>
+        </tr>
+    </table>
+</div>
+<div class="payment-box">
+    <strong>
+        Payment Information
+    </strong>
+    <br/>
+    Payment Method:
+    <b>
+        {payment_method}
+    </b>
+    &nbsp;&nbsp; | &nbsp;&nbsp;
+    Payment Status:
+    <b>
+        {payment_status}
+    </b>
+</div>
+<div class="footer">
+    <div class="footer-note">
+        <b>
+            Order Date:
+        </b>
+        {fmt(order.get('created_at'))}
+        <br/>
+        <b>
+            Delivered Date:
+        </b>
+        {delivered_date}
+        <br/>
+        <br/>
+        This is a computer-generated invoice.
+        <br/>
+        No physical signature is required.
+    </div>
+    <div class="signature">
+        <img
+            src="/bakery_signature.png"
+            alt="Digital Signature"
+        />
+        <div class="signature-line">
+            Authorized Signatory
+        </div>
+        <div class="signature-company">
+            SLV Bakery
+        </div>
+    </div>
+</div>
+<div class="thank-you">
+    Thank you for choosing SLV Iyengar Bakery ❤️
+</div>
+</div>
+</body>
+</html>
+"""
 @api.get("/admin/orders/{oid}/invoice")
-async def admin_invoice(oid: str, _: dict = Depends(get_admin_user)):
-    order = await db.orders.find_one({"id": oid}, {"_id": 0})
-    if not order:
-        raise HTTPException(404, "Order not found")
-    return HTMLResponse(_invoice_html(order))
+async def admin_invoice(
+    oid: str,
+    _: dict = Depends(get_admin_user)
+):
 
+    order = await db.orders.find_one(
+        {"id": oid},
+        {"_id": 0}
+    )
+
+    if not order:
+        raise HTTPException(
+            404,
+            "Order not found"
+        )
+
+    return HTMLResponse(
+        _invoice_html(order)
+    )
 @api.get("/admin/reports/export")
 async def admin_reports_export(
     period: str = "daily", format: str = "excel",
