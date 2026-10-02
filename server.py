@@ -11,7 +11,7 @@ import jwt
 import secrets
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Literal
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
@@ -100,6 +100,33 @@ def clean(doc: dict) -> dict:
     doc.pop("password_hash", None)
     return doc
 
+FOOD_TYPE_VEG = "veg"
+FOOD_TYPE_NON_VEG = "non_veg"
+FOOD_TYPE_EGG = "egg"
+FOOD_TYPES = {FOOD_TYPE_VEG, FOOD_TYPE_NON_VEG, FOOD_TYPE_EGG}
+FOOD_TYPE_ALIASES = {
+    "veg": FOOD_TYPE_VEG,
+    "vegetarian": FOOD_TYPE_VEG,
+    "non_veg": FOOD_TYPE_NON_VEG,
+    "nonveg": FOOD_TYPE_NON_VEG,
+    "non_vegetarian": FOOD_TYPE_NON_VEG,
+    "egg": FOOD_TYPE_EGG,
+    "eggetarian": FOOD_TYPE_EGG,
+    "contains_egg": FOOD_TYPE_EGG,
+}
+
+def normalize_food_type(value: Any) -> str:
+    if not isinstance(value, str):
+        return FOOD_TYPE_VEG
+    key = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return FOOD_TYPE_ALIASES.get(key, FOOD_TYPE_VEG)
+
+def with_food_type(doc: Optional[dict]) -> Optional[dict]:
+    if not doc:
+        return doc
+    doc["food_type"] = normalize_food_type(doc.get("food_type"))
+    return doc
+
 async def get_current_user(request: Request) -> dict:
     auth = request.headers.get("Authorization", "")
     token = auth[7:] if auth.startswith("Bearer ") else request.cookies.get("access_token")
@@ -180,6 +207,7 @@ class ProductIn(BaseModel):
     rating: float = 4.5
     tags: List[str] = []  # just_arrived, freshly_baked, most_ordered, recommended, featured
     in_stock: bool = True
+    food_type: Literal["veg", "non_veg", "egg"] = "veg"
 
 class CartItemIn(BaseModel):
     product_id: str; quantity: int = 1; weight: Optional[str] = None
@@ -402,24 +430,28 @@ async def list_products(
     elif sort == "price_high": cursor = cursor.sort("discount_price", -1)
     elif sort == "rating": cursor = cursor.sort("rating", -1)
     else: cursor = cursor.sort("created_at", -1)
-    return await cursor.to_list(limit)
+    return [with_food_type(p) for p in await cursor.to_list(limit)]
 
 @api.get("/products/{pid}")
 async def get_product(pid: str):
     p = await db.products.find_one({"id": pid}, {"_id": 0})
     if not p: raise HTTPException(404, "Not found")
-    return p
+    return with_food_type(p)
 
 @api.post("/products")
 async def create_product(data: ProductIn, _: dict = Depends(get_admin_user)):
-    p = {"id": new_id(), **data.model_dump(), "reviews": [], "created_at": now_iso()}
+    payload = data.model_dump()
+    payload["food_type"] = normalize_food_type(payload.get("food_type"))
+    p = {"id": new_id(), **payload, "reviews": [], "created_at": now_iso()}
     await db.products.insert_one(p)
-    return clean(p)
+    return with_food_type(clean(p))
 
 @api.put("/products/{pid}")
 async def update_product(pid: str, data: ProductIn, _: dict = Depends(get_admin_user)):
-    await db.products.update_one({"id": pid}, {"$set": data.model_dump()})
-    return await db.products.find_one({"id": pid}, {"_id": 0})
+    payload = data.model_dump()
+    payload["food_type"] = normalize_food_type(payload.get("food_type"))
+    await db.products.update_one({"id": pid}, {"$set": payload})
+    return with_food_type(await db.products.find_one({"id": pid}, {"_id": 0}))
 
 @api.delete("/products/{pid}")
 async def delete_product(pid: str, _: dict = Depends(get_admin_user)):
@@ -433,7 +465,7 @@ async def get_favorites(user: dict = Depends(get_current_user)):
     if not fav: return {"product_ids": []}
     if fav.get("product_ids"):
         prods = await db.products.find({"id": {"$in": fav["product_ids"]}}, {"_id": 0}).to_list(200)
-        return {"product_ids": fav["product_ids"], "products": prods}
+        return {"product_ids": fav["product_ids"], "products": [with_food_type(p) for p in prods]}
     return {"product_ids": [], "products": []}
 
 @api.post("/favorites/toggle")
@@ -458,7 +490,7 @@ async def _attach_products(items: list[dict]) -> list[dict]:
     ids = [i["product_id"] for i in items]
     prods = {p["id"]: p for p in await db.products.find({"id": {"$in": ids}}, {"_id": 0}).to_list(200)}
     for i in items:
-        i["product"] = prods.get(i["product_id"])
+        i["product"] = with_food_type(prods.get(i["product_id"]))
     return items
 
 @api.get("/cart")
@@ -1653,6 +1685,7 @@ async def seed():
              "Real strawberry ice cream", "Milk, cream, strawberries"),
         ]
         for name, cat, op, dp, wt, tags, imgs, desc, ing in sample:
+            food_type = FOOD_TYPE_EGG if "egg" in (ing or "").lower() else FOOD_TYPE_VEG
             await db.products.insert_one({
                 "id": new_id(), "name": name, "category": cat,
                 "description": desc, "ingredients": ing,
@@ -1660,8 +1693,14 @@ async def seed():
                 "weight": wt, "weight_options": [wt, "1kg"] if "g" in wt else [wt],
                 "images": imgs, "stock": 50, "rating": round(4 + (hash(name) % 10) / 10, 1),
                 "tags": tags, "in_stock": True, "reviews": [],
+                "food_type": food_type,
                 "created_at": now_iso(),
             })
+
+    await db.products.update_many(
+        {"$or": [{"food_type": {"$exists": False}}, {"food_type": None}, {"food_type": ""}]},
+        {"$set": {"food_type": FOOD_TYPE_VEG}},
+    )
 
 @app.on_event("startup")
 async def on_start():
